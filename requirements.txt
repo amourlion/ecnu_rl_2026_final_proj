@@ -1,0 +1,4 @@
+//项目级依赖
+pandas>=2.2
+pyarrow>=15.0
+pytest>=8.0

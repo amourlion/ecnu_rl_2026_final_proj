@@ -1,1 +1,10 @@
 /data/
+.venv/
+/artifacts/*
+!/artifacts/processed/
+!/artifacts/processed/*.parquet
+!/artifacts/processed/splits.json
+outputs/
+__pycache__/
+.pytest_cache/
+*.pyc

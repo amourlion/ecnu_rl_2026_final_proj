@@ -31,6 +31,52 @@
 5. 生成 project 动态画像：当前 entry 数、剩余时间、历史热度、平均得分、奖金、是否接近 deadline。
 6. 按时间划分训练集、验证集、测试集，建议比例为 70% / 15% / 15%，避免未来信息泄露。
 
+### 2.1 已统一的数据清洗接口
+
+多人协作中，数据清洗和时间切分必须先统一完成，后续所有实验只能读取公共 artifacts，不允许在各自实验目录中重新解析原始 JSON 或重新划分 train/valid/test。
+
+正式实验数据范围固定为：
+
+- 只使用 `data/project_list.csv` 中列出的 2501 个 project。
+- 不在 `project_list.csv` 中的 project 文件和 entry 文件不进入正式实验。
+
+公共清洗实现：
+
+- `shared/data_utils/preprocess.py`：读取 project、entry、worker_quality，生成 parquet 中间表。
+- `shared/data_utils/split.py`：按 `entry_created_at` 时间顺序划分 `train` / `valid` / `test`。
+- `scripts/build_artifacts.py`：统一构建 artifacts 的命令行入口。
+
+构建命令：
+
+```bash
+.venv/bin/python scripts/build_artifacts.py --data-dir data --output-dir artifacts/processed
+```
+
+输出文件：
+
+- `artifacts/processed/projects.parquet`
+- `artifacts/processed/entries.parquet`
+- `artifacts/processed/workers.parquet`
+- `artifacts/processed/events.parquet`
+- `artifacts/processed/splits.json`
+
+清洗规则：
+
+- `industry` 缺失填为 `unknown`。
+- entry 的 `score` 使用该 entry 所有 revisions 的最大 `score`。
+- `award_value`、`tip_value` 缺失按 0 处理。
+- 时间字段统一转成 UTC datetime。
+- `worker_quality < 0` 或缺失视为无效质量分，用 train split 中有效 worker quality 的均值填充。
+- `worker_quality` 最终归一化到 0-1。
+- `events.parquet` 是强化学习环境的主时间线，按 `entry_created_at` 和 `entry_id` 稳定排序。
+
+当前公共 artifacts 的语义统计：
+
+- projects: 2501
+- entries/events: 190835
+- workers: 1807
+- split: train 133584 / valid 28625 / test 28626
+
 ## 3. 强化学习环境设计
 
 ### 3.1 状态 State
@@ -94,6 +140,64 @@ reward = alpha * worker_reward + (1 - alpha) * requester_reward
 3. 根据历史数据判断该 worker 是否实际参与该 project，并计算奖励。
 4. 更新 worker/project 历史统计。
 5. 进入下一个 worker 到达事件。
+
+### 3.5 已统一的环境接口
+
+后续 DQN、Double DQN、Dueling DQN、Prioritized Replay DQN 等实验必须共用 `shared/envs/recommendation_env.py` 中的 `CrowdsourcingRecEnv`，保证候选池、reward、状态转移和评价口径一致。
+
+使用方式：
+
+```python
+from shared.envs import CrowdsourcingRecEnv
+
+env = CrowdsourcingRecEnv.from_artifacts(
+    "artifacts/processed",
+    split="train",
+    candidate_k=20,
+    reward_type="combined",
+)
+
+state = env.reset()
+candidates = env.get_candidates()
+next_state, reward, done, info = env.step(action_index)
+```
+
+接口约定：
+
+- `reset()` 返回当前 worker 到达事件对应的 state。
+- `get_candidates()` 返回当前时间可推荐的 Top-K project 候选池。
+- `step(action_index)` 中的 `action_index` 是候选池行号，不是全局 project id。
+- 每次推荐只输出一个 project。
+- `reward_type` 可选 `worker`、`requester`、`combined`。
+- `info` 中统一返回 `worker_reward`、`requester_reward`、`combined_reward`、`hit`、`recommended_project_id`、`true_project_id`、`score`、`winner`、`finalist`、`withdrawn` 等字段。
+
+候选池约束：
+
+- project 必须满足 `start_date <= current_time <= deadline`。
+- 默认 `candidate_k=20`，如要改为 50，必须全组统一修改配置。
+- 候选池初筛使用 category 匹配、奖金、平均分、竞争强度、剩余时间等启发式排序。
+
+统一评价接口：
+
+```python
+from shared.metrics import evaluate_agent
+
+metrics = evaluate_agent(agent, env)
+```
+
+所有实验必须输出统一 metrics 字段：
+
+- `avg_worker_reward`
+- `avg_requester_reward`
+- `avg_combined_reward`
+- `hitrate_at_1`
+- `avg_score`
+- `winner_rate`
+- `finalist_rate`
+- `withdrawn_rate`
+- `avg_worker_quality`
+- `project_coverage`
+- `category_diversity`
 
 ## 4. 实验矩阵
 
