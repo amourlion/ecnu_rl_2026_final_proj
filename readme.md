@@ -48,6 +48,10 @@
 ├── scripts/
 │   └── build_artifacts.py
 ├── exps/
+│   ├── dqn_template/
+│   │   ├── requirements.txt
+│   │   ├── run.py
+│   │   └── README.md
 │   ├── random_baseline/
 │   │   ├── .venv/
 │   │   ├── requirements.txt
@@ -67,6 +71,7 @@
 │   └── final_report.md
 └── shared/
     ├── data_utils/
+    ├── dqn/
     ├── envs/
     ├── metrics/
     └── plotting/
@@ -82,7 +87,9 @@
 - `artifacts/processed/`：由公共清洗流程生成的 parquet 中间表和时间切分文件，供所有实验读取。
 - `scripts/`：公共构建脚本。
 - `exps/`：每个实验的独立工作区，实验之间依赖隔离。
+- `exps/dqn_template/`：DQN 系列实验模板，复制后通过配置切换 Exp3-Exp7。
 - `shared/`：可复用公共代码，例如数据读取、环境模拟、指标计算、绘图工具。
+- `shared/dqn/`：DQN 系列公共训练骨架，包含特征编码、Q 网络、replay buffer、agent 和训练循环。
 - `reports/`：最终报告、图表、实验结果汇总。
 
 ## 公共数据清洗与接口
@@ -213,6 +220,90 @@ python run.py
 ```
 
 如果实验需要 PyTorch、TensorFlow、stable-baselines3 或其他较重依赖，只安装在该实验自己的 `.venv` 中，避免影响其他成员。
+
+DQN 系列实验使用 `exps/dqn_template/` 创建独立环境。公共 DQN 代码位于 `shared/dqn/`，但 PyTorch 不进入项目级 `requirements.txt`。每个 DQN 实验需要在自己的 `.venv` 中安装 GPU 对应的 PyTorch wheel：
+
+```bash
+cp -r exps/dqn_template exps/dueling_dqn
+cd exps/dueling_dqn
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install torch --index-url https://download.pytorch.org/whl/cu128
+python run.py
+```
+
+如果是在 Windows + WSL 中使用 NVIDIA GPU，先确认 WSL 内 `nvidia-smi` 正常，且 `/dev/dxg` 存在。不同机器可根据本机驱动选择 PyTorch 官方支持的 CUDA wheel。
+
+DQN 系列公共骨架通过 `DQNConfig` 切换实验差异：
+
+| 实验 | `reward_type` | `network_type` | `replay_type` | `double_dqn` |
+| --- | --- | --- | --- | --- |
+| Exp3 Vanilla DQN worker | `worker` | `dqn` | `uniform` | `False` |
+| Exp4 Vanilla DQN requester | `requester` | `dqn` | `uniform` | `False` |
+| Exp5 Double DQN | `combined` | `dqn` | `uniform` | `True` |
+| Exp6 Dueling DQN | `combined` | `dueling` | `uniform` | `False` |
+| Exp7 Prioritized Replay DQN | `combined` | `dqn` | `prioritized` | `False` |
+
+### DQN 公共骨架使用方法
+
+后续成员实现 Exp3-Exp7 时，不需要复制或改写训练循环，只需要复制模板并修改本实验的 `DQNConfig`：
+
+```bash
+cp -r exps/dqn_template exps/dqn_worker_reward
+cd exps/dqn_worker_reward
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install torch --index-url https://download.pytorch.org/whl/cu128
+python run.py
+```
+
+`exps/[expname]/run.py` 的核心逻辑固定为：
+
+```python
+from shared.dqn import DQNConfig, train_dqn
+
+config = DQNConfig(
+    artifact_dir=ROOT / "artifacts/processed",
+    output_dir=exp_dir / "outputs",
+    experiment_name=exp_dir.name,
+    reward_type="worker",
+    network_type="dqn",
+    replay_type="uniform",
+    double_dqn=False,
+    candidate_k=20,
+    train_steps=50_000,
+    eval_max_steps=5_000,
+    device="auto",
+)
+train_dqn(config)
+```
+
+各实验通常只修改这些字段：
+
+- `experiment_name`：实验目录名，例如 `dqn_worker_reward`、`dueling_dqn`。
+- `reward_type`：选择 `worker`、`requester` 或 `combined`。
+- `network_type`：普通 DQN 用 `dqn`，Dueling DQN 用 `dueling`。
+- `replay_type`：普通经验回放用 `uniform`，Prioritized Replay 用 `prioritized`。
+- `double_dqn`：Double DQN 设置为 `True`，其他 DQN 实验设置为 `False`。
+- `train_steps`、`eval_max_steps`：根据本机训练时间调整，但正式对比实验应保持一致。
+- `device`：默认 `auto`，有 CUDA 版 PyTorch 时自动使用 GPU。
+
+公共骨架会自动完成：
+
+- 从 `artifacts/processed` 读取 train/valid/test 环境。
+- 使用同一套候选池、特征编码、reward 和评价指标。
+- 训练 online Q network 和 target network。
+- 根据配置启用 Double DQN、Dueling network 或 Prioritized Replay。
+- 输出 `outputs/metrics.csv`、`outputs/training_curve.csv`、`outputs/result_summary.json`，安装 matplotlib 时额外输出 `outputs/training_curve.png`。
+
+协作约束：
+
+- 不要在各自实验目录中重新实现 `CrowdsourcingRecEnv`、reward、metrics 或数据清洗逻辑。
+- 不要在各自实验目录中重新划分 train/valid/test。
+- 如果需要改公共特征、奖励或训练骨架，先在组内同步，因为会影响 Exp3-Exp7 的公平对比。
+- 每个 DQN 实验目录只保留本实验配置、说明和输出，公共代码统一从 `shared/dqn/` 引入。
 
 ## 推荐实验矩阵
 

@@ -251,6 +251,85 @@ DQN 变体：
 - Dueling DQN：输出 `V(s)` 和 `A(s,a)`，再组合为 Q 值。
 - Prioritized Replay DQN：按 TD error 优先采样 replay buffer。
 
+### 5.2.1 已统一的 DQN 公共训练骨架
+
+DQN 系列 Exp3-Exp7 共用 `shared/dqn/`，避免每个实验重复实现训练循环。公共骨架负责：
+
+- `shared/dqn/features.py`：将环境返回的 `state` 和候选池 `candidates` 编码为 tensor。
+- `shared/dqn/networks.py`：实现 `DQNNet` 和 `DuelingDQNNet`。
+- `shared/dqn/replay.py`：实现普通 replay buffer 和 prioritized replay buffer。
+- `shared/dqn/agent.py`：实现 epsilon-greedy、target network、Double DQN target 计算和优化步骤。
+- `shared/dqn/trainer.py`：统一训练、验证、测试和结果输出。
+
+各实验只在自己的 `exps/[expname]/run.py` 中修改 `DQNConfig`：
+
+| 实验 | `reward_type` | `network_type` | `replay_type` | `double_dqn` |
+| --- | --- | --- | --- | --- |
+| Exp3 | `worker` | `dqn` | `uniform` | `False` |
+| Exp4 | `requester` | `dqn` | `uniform` | `False` |
+| Exp5 | `combined` | `dqn` | `uniform` | `True` |
+| Exp6 | `combined` | `dueling` | `uniform` | `False` |
+| Exp7 | `combined` | `dqn` | `prioritized` | `False` |
+
+依赖边界：
+
+- 项目级 `requirements.txt` 不安装 PyTorch。
+- DQN 实验从 `exps/dqn_template/` 复制，使用自己的 `.venv`。
+- 每个 DQN 实验在自己的环境里安装与本机 GPU/驱动匹配的 PyTorch CUDA wheel。
+- 公共骨架输出 `outputs/metrics.csv`、`outputs/training_curve.csv`、可选 `outputs/training_curve.png` 和 `outputs/result_summary.json`。
+
+使用流程：
+
+1. 复制模板到自己的实验目录：
+
+```bash
+cp -r exps/dqn_template exps/dqn_worker_reward
+cd exps/dqn_worker_reward
+```
+
+2. 创建本实验独立虚拟环境并安装依赖：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install torch --index-url https://download.pytorch.org/whl/cu128
+```
+
+3. 在 `run.py` 中只修改 `DQNConfig`，不要改公共训练循环：
+
+```python
+config = DQNConfig(
+    artifact_dir=ROOT / "artifacts/processed",
+    output_dir=exp_dir / "outputs",
+    experiment_name=exp_dir.name,
+    reward_type="worker",
+    network_type="dqn",
+    replay_type="uniform",
+    double_dqn=False,
+    candidate_k=20,
+    train_steps=50_000,
+    eval_max_steps=5_000,
+    device="auto",
+)
+```
+
+4. 运行训练：
+
+```bash
+python run.py
+```
+
+公共骨架会自动完成 train 环境构建、epsilon-greedy 采样、replay buffer、target network 更新、valid/test 评价和结果文件输出。`device="auto"` 会在当前虚拟环境安装 CUDA 版 PyTorch 且 GPU 可用时使用 GPU，否则退回 CPU。
+
+成员分工时的边界：
+
+- Exp3-Exp7 只通过 `DQNConfig` 切换差异，保证候选池、特征、reward、评价口径一致。
+- 实验成员可以调整本实验的 `train_steps`、`learning_rate`、`batch_size` 等超参数，但正式横向对比前需要统一关键训练预算。
+- 不要在实验目录中复制 `shared/dqn/` 或 `shared/envs/` 的代码；如公共骨架需要修改，应改 `shared/` 并同步通知其他成员。
+- 不要在实验目录中重新处理原始 `data/` 或重新生成 split；所有正式训练必须读取 `artifacts/processed/`。
+- `outputs/metrics.csv`、`outputs/training_curve.csv`、`outputs/result_summary.json` 是报告汇总的标准输入。
+
 ### 5.3 Actor-Critic / A2C
 
 - Actor 输出候选 project 的选择概率。
