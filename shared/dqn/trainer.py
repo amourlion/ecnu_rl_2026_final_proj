@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import time
 from pathlib import Path
@@ -12,8 +13,16 @@ from shared.envs import CrowdsourcingRecEnv
 from shared.metrics import evaluate_agent
 
 
+def _resolve_output_dir(base: Path) -> Path:
+    """Return base/v1, base/v2, ... choosing the next unused version."""
+    version = 1
+    while (base / f"v{version}").exists():
+        version += 1
+    return base / f"v{version}"
+
+
 def train_dqn(config: DQNConfig) -> dict:
-    output_dir = Path(config.output_dir)
+    output_dir = _resolve_output_dir(Path(config.output_dir))
     output_dir.mkdir(parents=True, exist_ok=True)
 
     train_env = CrowdsourcingRecEnv.from_artifacts(
@@ -88,18 +97,13 @@ def train_dqn(config: DQNConfig) -> dict:
     curve = pd.DataFrame(curve_rows)
     curve.to_csv(output_dir / "training_curve.csv", index=False)
     _write_training_curve_png(curve, output_dir / "training_curve.png")
-    summary = {
-        "experiment_name": config.experiment_name,
-        "reward_type": config.reward_type,
-        "network_type": config.network_type,
-        "replay_type": config.replay_type,
-        "double_dqn": config.double_dqn,
-        "candidate_k": config.candidate_k,
-        "train_steps": config.train_steps,
-        "device": str(agent.device),
-        "timing": timing,
-        "metrics": metrics,
-    }
+    summary = dataclasses.asdict(config)
+    summary["device"] = str(agent.device)
+    summary["timing"] = timing
+    summary["metrics"] = metrics
+    # Convert Path fields back to strings for JSON serialization
+    summary["artifact_dir"] = str(summary["artifact_dir"])
+    summary["output_dir"] = str(output_dir)
     with (output_dir / "result_summary.json").open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2, ensure_ascii=False)
     return summary
