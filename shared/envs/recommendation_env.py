@@ -108,7 +108,13 @@ class CrowdsourcingRecEnv:
                     & (true_project["deadline"] >= current_time)
                 )
                 true_project["heuristic_score"] = -1.0
-                candidates = pd.concat([candidates, true_project], ignore_index=True)
+                candidates = pd.concat(
+                    [
+                        candidates.head(max(self.candidate_k - 1, 0)),
+                        true_project,
+                    ],
+                    ignore_index=True,
+                )
         return candidates.head(self.candidate_k).reset_index(drop=True)
 
     def step(self, action_index: int) -> tuple[dict, float, bool, dict]:
@@ -125,6 +131,11 @@ class CrowdsourcingRecEnv:
         hit = recommended_project_id == true_project_id
         worker_id = int(event["worker_id"])
         worker_quality = float(self.worker_quality.get(worker_id, 0.0))
+        true_project = self.projects[self.projects["project_id"] == true_project_id]
+        true_project_row = true_project.iloc[0] if not true_project.empty else None
+        same_category = _same_value(recommended, true_project_row, "category")
+        same_sub_category = _same_value(recommended, true_project_row, "sub_category")
+        same_industry = _same_value(recommended, true_project_row, "industry")
         rewards = compute_rewards(
             hit=hit,
             score=float(event["score"]),
@@ -135,6 +146,9 @@ class CrowdsourcingRecEnv:
             tip_value=float(event["tip_value"]),
             worker_quality=worker_quality,
             alpha=self.alpha,
+            same_category=same_category,
+            same_sub_category=same_sub_category,
+            same_industry=same_industry,
         )
 
         info = {
@@ -149,6 +163,9 @@ class CrowdsourcingRecEnv:
             "finalist": bool(event["finalist"]) if hit else False,
             "withdrawn": bool(event["withdrawn"]) if hit else False,
             "category": int(recommended["category"]),
+            "same_category": same_category,
+            "same_sub_category": same_sub_category,
+            "same_industry": same_industry,
         }
         self._update_history(worker_id, event)
         self.index += 1
@@ -166,3 +183,8 @@ class CrowdsourcingRecEnv:
                 key=history["categories"].count,
             )
 
+
+def _same_value(left: pd.Series, right: pd.Series | None, column: str) -> bool:
+    if right is None or column not in left or column not in right:
+        return False
+    return bool(left[column] == right[column])

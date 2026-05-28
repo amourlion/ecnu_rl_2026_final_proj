@@ -190,6 +190,116 @@ def test_environment_returns_candidates_from_active_projects_and_steps(tmp_path)
     assert "requester_reward" in info
 
 
+def test_environment_keeps_true_project_when_candidate_pool_is_full():
+    projects = pd.DataFrame(
+        {
+            "project_id": [1, 2, 3],
+            "category": [1, 1, 1],
+            "sub_category": [1, 1, 1],
+            "industry": [1, 1, 1],
+            "start_date": pd.to_datetime(["2020-01-01"] * 3, utc=True),
+            "deadline": pd.to_datetime(["2020-01-10"] * 3, utc=True),
+            "total_awards": [300.0, 200.0, 100.0],
+            "average_score": [5.0, 4.0, 3.0],
+            "creative_count": [1, 1, 1],
+            "entry_count": [1, 1, 1],
+        }
+    )
+    events = pd.DataFrame(
+        {
+            "event_id": [0],
+            "worker_id": [10],
+            "project_id": [3],
+            "entry_created_at": pd.to_datetime(["2020-01-02"], utc=True),
+            "split": ["train"],
+            "score": [3.0],
+            "winner": [False],
+            "finalist": [False],
+            "withdrawn": [False],
+            "award_value": [0.0],
+            "tip_value": [0.0],
+        }
+    )
+    workers = pd.DataFrame({"worker_id": [10], "worker_quality": [0.8]})
+    env = CrowdsourcingRecEnv(
+        projects=projects,
+        entries=events,
+        workers=workers,
+        events=events,
+        split="train",
+        candidate_k=2,
+    )
+
+    candidates = env.get_candidates()
+
+    assert len(candidates) == 2
+    assert 3 in set(candidates["project_id"])
+
+
+def test_environment_shapes_miss_reward_by_project_similarity():
+    projects = pd.DataFrame(
+        {
+            "project_id": [1, 2, 3],
+            "category": [1, 1, 3],
+            "sub_category": [10, 10, 30],
+            "industry": [100, 100, 300],
+            "start_date": pd.to_datetime(["2020-01-01"] * 3, utc=True),
+            "deadline": pd.to_datetime(["2020-01-10"] * 3, utc=True),
+            "total_awards": [300.0, 200.0, 100.0],
+            "average_score": [5.0, 4.0, 3.0],
+            "creative_count": [1, 1, 1],
+            "entry_count": [1, 1, 1],
+        }
+    )
+    events = pd.DataFrame(
+        {
+            "event_id": [0],
+            "worker_id": [10],
+            "project_id": [1],
+            "entry_created_at": pd.to_datetime(["2020-01-02"], utc=True),
+            "split": ["train"],
+            "score": [3.0],
+            "winner": [False],
+            "finalist": [False],
+            "withdrawn": [False],
+            "award_value": [0.0],
+            "tip_value": [0.0],
+        }
+    )
+    workers = pd.DataFrame({"worker_id": [10], "worker_quality": [0.8]})
+
+    similar_env = CrowdsourcingRecEnv(
+        projects=projects,
+        entries=events,
+        workers=workers,
+        events=events,
+        split="train",
+        candidate_k=3,
+        reward_type="combined",
+    )
+    unrelated_env = CrowdsourcingRecEnv(
+        projects=projects,
+        entries=events,
+        workers=workers,
+        events=events,
+        split="train",
+        candidate_k=3,
+        reward_type="combined",
+    )
+
+    similar_candidates = similar_env.get_candidates()
+    unrelated_candidates = unrelated_env.get_candidates()
+    similar_action = int(similar_candidates.index[similar_candidates["project_id"] == 2][0])
+    unrelated_action = int(unrelated_candidates.index[unrelated_candidates["project_id"] == 3][0])
+
+    _, similar_reward, _, similar_info = similar_env.step(similar_action)
+    _, unrelated_reward, _, unrelated_info = unrelated_env.step(unrelated_action)
+
+    assert similar_info["hit"] is False
+    assert unrelated_info["hit"] is False
+    assert similar_reward > unrelated_reward
+
+
 def test_evaluate_agent_outputs_common_metrics(tmp_path):
     raw_dir = tmp_path / "data"
     out_dir = tmp_path / "artifacts"

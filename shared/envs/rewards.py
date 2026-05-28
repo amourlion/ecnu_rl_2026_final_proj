@@ -17,10 +17,20 @@ def compute_rewards(
     tip_value: float,
     worker_quality: float,
     alpha: float = 0.5,
+    same_category: bool = False,
+    same_sub_category: bool = False,
+    same_industry: bool = False,
 ) -> dict[str, float]:
     if not hit:
         worker_reward = -0.1
+        worker_reward += 0.03 if same_category else 0.0
+        worker_reward += 0.02 if same_sub_category else 0.0
+        worker_reward += 0.01 if same_industry else 0.0
+
         requester_reward = -0.05
+        requester_reward += 0.02 if same_category else 0.0
+        requester_reward += 0.01 if same_sub_category else 0.0
+        requester_reward += 0.01 if same_industry else 0.0
     else:
         score_norm = max(score, 0.0) / 5.0
         money_norm = _award_scale(award_value + tip_value)
@@ -41,4 +51,3 @@ def compute_rewards(
         "requester_reward": float(requester_reward),
         "combined_reward": float(combined),
     }
-
