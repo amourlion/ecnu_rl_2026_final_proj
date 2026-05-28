@@ -1,0 +1,8 @@
+-r ../../requirements.txt
+numpy>=1.26
+matplotlib>=3.8
+pyyaml>=6.0
+
+# Install PyTorch separately according to the local GPU/CUDA environment.
+# For example, with a recent NVIDIA driver in WSL:
+# pip install torch --index-url https://download.pytorch.org/whl/cu128

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -27,6 +28,7 @@ def train_dqn(config: DQNConfig) -> dict:
     done = bool(state.get("done", False))
     curve_rows = []
 
+    t_train_start = time.perf_counter()
     for step in range(config.train_steps):
         if done:
             state = train_env.reset()
@@ -63,7 +65,25 @@ def train_dqn(config: DQNConfig) -> dict:
         )
         state = next_state
 
+    t_train_end = time.perf_counter()
+    train_duration_s = t_train_end - t_train_start
+
+    t_eval_start = time.perf_counter()
     metrics = _evaluate_splits(agent, config)
+    t_eval_end = time.perf_counter()
+    eval_duration_s = t_eval_end - t_eval_start
+
+    timing = {
+        "train_duration_s": round(train_duration_s, 3),
+        "eval_duration_s": round(eval_duration_s, 3),
+        "total_duration_s": round(train_duration_s + eval_duration_s, 3),
+    }
+    print(
+        f"[timing] train={train_duration_s:.1f}s  "
+        f"eval={eval_duration_s:.1f}s  "
+        f"total={train_duration_s + eval_duration_s:.1f}s"
+    )
+
     pd.DataFrame([metrics]).to_csv(output_dir / "metrics.csv", index=False)
     curve = pd.DataFrame(curve_rows)
     curve.to_csv(output_dir / "training_curve.csv", index=False)
@@ -77,6 +97,7 @@ def train_dqn(config: DQNConfig) -> dict:
         "candidate_k": config.candidate_k,
         "train_steps": config.train_steps,
         "device": str(agent.device),
+        "timing": timing,
         "metrics": metrics,
     }
     with (output_dir / "result_summary.json").open("w", encoding="utf-8") as handle:
