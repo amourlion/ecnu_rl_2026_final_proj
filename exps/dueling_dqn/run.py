@@ -20,8 +20,12 @@ def main() -> None:
         replay_type="uniform",
         double_dqn=False,
         candidate_k=20,
-        train_steps=50_000,
-        eval_max_steps=5_000,
+        train_steps=133_584,
+        eval_max_steps=None,
+        batch_size=64,
+        learning_rate=5e-4,
+        epsilon_decay_steps=80_000,
+        seed=42,
         device="auto",
     )
     train_dqn(config)
