@@ -5,6 +5,7 @@
 !/artifacts/processed/*.parquet
 !/artifacts/processed/splits.json
 outputs/
+!/exps/*/outputs/
 __pycache__/
 .pytest_cache/
 *.pyc
