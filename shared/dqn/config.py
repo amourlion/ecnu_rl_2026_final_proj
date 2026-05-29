@@ -15,6 +15,7 @@ class DQNConfig:
     double_dqn: bool = False
     candidate_k: int = 20
     alpha: float = 0.5
+    lambda_repeat: float = 0.02
     train_steps: int = 50_000
     eval_max_steps: int | None = 5_000
     batch_size: int = 64
@@ -35,8 +36,11 @@ class DQNConfig:
     device: str = "auto"
 
     def __post_init__(self) -> None:
-        if self.reward_type not in {"worker", "requester", "combined"}:
-            raise ValueError("reward_type must be worker, requester, or combined")
+        valid_reward_types = {"worker", "requester", "combined", "combined_diversity"}
+        if self.reward_type not in valid_reward_types:
+            raise ValueError(
+                "reward_type must be worker, requester, combined, or combined_diversity"
+            )
         if self.network_type not in {"dqn", "dueling"}:
             raise ValueError("network_type must be dqn or dueling")
         if self.replay_type not in {"uniform", "prioritized"}:

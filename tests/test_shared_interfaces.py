@@ -300,6 +300,63 @@ def test_environment_shapes_miss_reward_by_project_similarity():
     assert similar_reward > unrelated_reward
 
 
+def test_combined_diversity_reward_penalizes_repeated_project_recommendations():
+    projects = pd.DataFrame(
+        {
+            "project_id": [1, 2],
+            "category": [1, 1],
+            "sub_category": [10, 10],
+            "industry": [100, 100],
+            "start_date": pd.to_datetime(["2020-01-01"] * 2, utc=True),
+            "deadline": pd.to_datetime(["2020-01-10"] * 2, utc=True),
+            "total_awards": [300.0, 200.0],
+            "average_score": [5.0, 4.0],
+            "creative_count": [1, 1],
+            "entry_count": [1, 1],
+        }
+    )
+    events = pd.DataFrame(
+        {
+            "event_id": [0, 1],
+            "worker_id": [10, 10],
+            "project_id": [1, 1],
+            "entry_created_at": pd.to_datetime(
+                ["2020-01-02", "2020-01-03"],
+                utc=True,
+            ),
+            "split": ["train", "train"],
+            "score": [3.0, 3.0],
+            "winner": [False, False],
+            "finalist": [False, False],
+            "withdrawn": [False, False],
+            "award_value": [0.0, 0.0],
+            "tip_value": [0.0, 0.0],
+        }
+    )
+    workers = pd.DataFrame({"worker_id": [10], "worker_quality": [0.8]})
+    env = CrowdsourcingRecEnv(
+        projects=projects,
+        entries=events,
+        workers=workers,
+        events=events,
+        split="train",
+        candidate_k=2,
+        reward_type="combined_diversity",
+        lambda_repeat=0.02,
+    )
+
+    first_action = int(env.get_candidates().index[env.get_candidates()["project_id"] == 1][0])
+    _, first_reward, _, first_info = env.step(first_action)
+    second_action = int(env.get_candidates().index[env.get_candidates()["project_id"] == 1][0])
+    _, second_reward, _, second_info = env.step(second_action)
+
+    assert first_info["repeat_penalty"] == 0.0
+    assert second_info["repeat_penalty"] == 1.0
+    assert first_reward == first_info["combined_reward"]
+    assert second_reward == second_info["combined_reward"] - 0.02
+    assert second_reward < second_info["combined_reward"]
+
+
 def test_evaluate_agent_outputs_common_metrics(tmp_path):
     raw_dir = tmp_path / "data"
     out_dir = tmp_path / "artifacts"

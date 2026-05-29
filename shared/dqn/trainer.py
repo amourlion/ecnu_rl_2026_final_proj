@@ -31,6 +31,7 @@ def train_dqn(config: DQNConfig) -> dict:
         candidate_k=config.candidate_k,
         reward_type=config.reward_type,
         alpha=config.alpha,
+        lambda_repeat=config.lambda_repeat,
     )
     agent = DQNAgent(config)
     state = train_env.reset()
@@ -118,6 +119,7 @@ def _evaluate_splits(agent: DQNAgent, config: DQNConfig) -> dict[str, float]:
             candidate_k=config.candidate_k,
             reward_type=config.reward_type,
             alpha=config.alpha,
+            lambda_repeat=config.lambda_repeat,
         )
         metrics = evaluate_agent(agent, env, max_steps=config.eval_max_steps)
         for key, value in metrics.items():

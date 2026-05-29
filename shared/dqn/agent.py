@@ -79,44 +79,66 @@ class DQNAgent:
         if len(self.replay) < self.config.min_replay_size:
             return None
         batch = self.replay.sample(self.config.batch_size, beta=self.config.beta_at(step))
-        losses = []
-        td_errors = []
-        for transition in batch.transitions:
-            q_values = self.policy_net(transition.state, transition.candidates)
-            q_value = q_values[transition.action]
-            with torch.no_grad():
-                if transition.done or transition.next_candidates.shape[0] == 0:
-                    next_value = torch.tensor(0.0, device=self.device)
-                elif self.config.double_dqn:
-                    next_online = self.policy_net(
-                        transition.next_state,
-                        transition.next_candidates,
-                    )
-                    next_action = int(torch.argmax(next_online).item())
-                    next_value = self.target_net(
-                        transition.next_state,
-                        transition.next_candidates,
-                    )[next_action]
-                else:
-                    next_value = self.target_net(
-                        transition.next_state,
-                        transition.next_candidates,
-                    ).max()
-                target = torch.tensor(transition.reward, device=self.device) + (
-                    self.config.gamma * next_value
+
+        batch_Q, _action_offsets = self.policy_net.forward_batch(
+            [t.state for t in batch.transitions],
+            [t.candidates for t in batch.transitions],
+        )
+
+        # Index into the concatenated Q-values at each action location
+        q_values = []
+        for i, t in enumerate(batch.transitions):
+            start = _action_offsets[i]
+            q_values.append(batch_Q[start + t.action])
+        q_value = torch.stack(q_values)
+
+        with torch.no_grad():
+            next_batch_Q, _next_offsets = self.target_net.forward_batch(
+                [t.next_state for t in batch.transitions],
+                [t.next_candidates for t in batch.transitions],
+            )
+            if self.config.double_dqn:
+                next_online_batch_Q, _next_online_offsets = self.policy_net.forward_batch(
+                    [t.next_state for t in batch.transitions],
+                    [t.next_candidates for t in batch.transitions],
                 )
-            loss = self.loss_fn(q_value, target)
-            losses.append(loss)
-            td_errors.append(q_value.detach() - target.detach())
+            next_values = []
+            for i, t in enumerate(batch.transitions):
+                start = _next_offsets[i]
+                end = _next_offsets[i + 1] if i + 1 < len(_next_offsets) else next_batch_Q.shape[0]
+                n_candidates = end - start
+                if t.done or n_candidates == 0:
+                    next_values.append(torch.tensor(0.0, device=self.device))
+                elif self.config.double_dqn:
+                    q_vals = next_batch_Q[start:end]
+                    online_start = _next_online_offsets[i]
+                    online_end = (
+                        _next_online_offsets[i + 1]
+                        if i + 1 < len(_next_online_offsets)
+                        else next_online_batch_Q.shape[0]
+                    )
+                    next_online_q = next_online_batch_Q[online_start:online_end]
+                    best = int(torch.argmax(next_online_q).item())
+                    next_values.append(q_vals[best])
+                else:
+                    next_values.append(next_batch_Q[start:end].max())
+
+        target = torch.tensor(
+            [t.reward for t in batch.transitions],
+            dtype=torch.float32,
+            device=self.device,
+        ) + self.config.gamma * torch.stack(next_values)
+
+        td_errors = q_value - target
 
         weights = batch.weights.to(self.device)
-        loss_tensor = torch.stack(losses)
-        loss = (loss_tensor * weights).mean()
+        loss = (self.loss_fn(q_value, target) * weights).mean()
+
         self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=10.0)
         self.optimizer.step()
-        self.replay.update_priorities(batch.indices, torch.stack(td_errors))
+        self.replay.update_priorities(batch.indices, td_errors)
         return float(loss.detach().cpu().item())
 
     def sync_target(self) -> None:

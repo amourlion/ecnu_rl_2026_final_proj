@@ -21,9 +21,13 @@ class CrowdsourcingRecEnv:
         candidate_k: int = 20,
         reward_type: str = "combined",
         alpha: float = 0.5,
+        lambda_repeat: float = 0.02,
     ) -> None:
-        if reward_type not in {"worker", "requester", "combined"}:
-            raise ValueError("reward_type must be worker, requester, or combined")
+        valid_reward_types = {"worker", "requester", "combined", "combined_diversity"}
+        if reward_type not in valid_reward_types:
+            raise ValueError(
+                "reward_type must be worker, requester, combined, or combined_diversity"
+            )
         self.projects = projects.copy()
         self.entries = entries.copy()
         self.workers = workers.copy()
@@ -37,8 +41,11 @@ class CrowdsourcingRecEnv:
         self.candidate_k = candidate_k
         self.reward_type = reward_type
         self.alpha = alpha
+        self.lambda_repeat = lambda_repeat
         self.index = 0
         self.worker_history: dict[int, dict] = {}
+        self.recommended_counts: dict[int, int] = {}
+        self.total_recommendations = 0
         self.worker_quality = self.workers.set_index("worker_id")["worker_quality"].to_dict()
 
     @classmethod
@@ -49,6 +56,7 @@ class CrowdsourcingRecEnv:
         candidate_k: int = 20,
         reward_type: str = "combined",
         alpha: float = 0.5,
+        lambda_repeat: float = 0.02,
     ) -> "CrowdsourcingRecEnv":
         artifact_dir = Path(artifact_dir)
         return cls(
@@ -60,11 +68,14 @@ class CrowdsourcingRecEnv:
             candidate_k=candidate_k,
             reward_type=reward_type,
             alpha=alpha,
+            lambda_repeat=lambda_repeat,
         )
 
     def reset(self) -> dict:
         self.index = 0
         self.worker_history = {}
+        self.recommended_counts = {}
+        self.total_recommendations = 0
         return self._state()
 
     def _current_event(self) -> pd.Series:
@@ -150,9 +161,14 @@ class CrowdsourcingRecEnv:
             same_sub_category=same_sub_category,
             same_industry=same_industry,
         )
+        repeat_penalty = self._repeat_penalty(recommended_project_id)
+        rewards["combined_diversity_reward"] = float(
+            rewards["combined_reward"] - self.lambda_repeat * repeat_penalty
+        )
 
         info = {
             **rewards,
+            "repeat_penalty": repeat_penalty,
             "hit": hit,
             "recommended_project_id": recommended_project_id,
             "true_project_id": true_project_id,
@@ -167,11 +183,20 @@ class CrowdsourcingRecEnv:
             "same_sub_category": same_sub_category,
             "same_industry": same_industry,
         }
+        self.recommended_counts[recommended_project_id] = (
+            self.recommended_counts.get(recommended_project_id, 0) + 1
+        )
+        self.total_recommendations += 1
         self._update_history(worker_id, event)
         self.index += 1
         done = self.index >= len(self.events)
         reward = float(rewards[f"{self.reward_type}_reward"])
         return self._state(), reward, done, info
+
+    def _repeat_penalty(self, project_id: int) -> float:
+        if self.total_recommendations <= 0:
+            return 0.0
+        return float(self.recommended_counts.get(project_id, 0) / self.total_recommendations)
 
     def _update_history(self, worker_id: int, event: pd.Series) -> None:
         history = self.worker_history.setdefault(worker_id, {"categories": []})

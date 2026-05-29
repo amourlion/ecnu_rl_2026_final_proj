@@ -23,10 +23,17 @@ def test_dqn_config_builds_dueling_and_prioritized_variants() -> None:
         network_type="dqn",
         replay_type="prioritized",
     )
+    diversity_ablation = DQNConfig(
+        experiment_name="combined_diversity_ablation",
+        reward_type="combined_diversity",
+        network_type="dqn",
+        replay_type="uniform",
+    )
 
     assert dueling.network_type == "dueling"
     assert dueling.double_dqn is False
     assert prioritized.replay_type == "prioritized"
+    assert diversity_ablation.reward_type == "combined_diversity"
 
 
 def test_feature_encoder_returns_state_and_candidate_tensors() -> None:
@@ -61,6 +68,27 @@ def test_feature_encoder_returns_state_and_candidate_tensors() -> None:
     assert torch.isfinite(encoded.candidates).all()
 
 
+def test_feature_encoder_preserves_legacy_non_numeric_and_missing_column_behavior() -> None:
+    from shared.dqn import FeatureEncoder
+
+    encoder = FeatureEncoder()
+    candidates = pd.DataFrame(
+        {
+            "project_id": [1],
+            "category": [3],
+            "sub_category": [10],
+            "industry": ["entertainment-and-sports"],
+        }
+    )
+
+    encoded = encoder._encode_candidates_batch(candidates).cpu()
+
+    assert encoded.shape == (1, encoder.candidate_dim)
+    assert encoded[0, 3].item() == 0.0
+    assert encoded[0, 7].item() == 0.0
+    assert torch.isfinite(encoded).all()
+
+
 def test_dueling_network_outputs_one_q_value_per_candidate() -> None:
     from shared.dqn import DuelingDQNNet
 
@@ -71,6 +99,48 @@ def test_dueling_network_outputs_one_q_value_per_candidate() -> None:
     q_values = model(state, candidates)
 
     assert q_values.shape == (5,)
+
+
+def test_double_dqn_uses_one_batched_online_next_forward(monkeypatch) -> None:
+    from shared.dqn import DQNAgent, DQNConfig, Transition
+
+    config = DQNConfig(
+        double_dqn=True,
+        batch_size=2,
+        min_replay_size=1,
+        hidden_dim=8,
+        device="cpu",
+    )
+    agent = DQNAgent(config)
+    state = torch.zeros((1, agent.encoder.state_dim), dtype=torch.float32)
+    candidates = torch.zeros((2, agent.encoder.candidate_dim), dtype=torch.float32)
+    next_candidates = torch.zeros((3, agent.encoder.candidate_dim), dtype=torch.float32)
+    for reward in (1.0, 2.0):
+        agent.replay.push(
+            Transition(
+                state=state,
+                candidates=candidates,
+                action=0,
+                reward=reward,
+                next_state=state,
+                next_candidates=next_candidates,
+                done=False,
+            )
+        )
+
+    original_forward_batch = agent.policy_net.forward_batch
+    calls: list[int] = []
+
+    def wrapped_forward_batch(states, candidates_list):
+        calls.append(len(states))
+        return original_forward_batch(states, candidates_list)
+
+    monkeypatch.setattr(agent.policy_net, "forward_batch", wrapped_forward_batch)
+
+    loss = agent.optimize(step=0)
+
+    assert loss is not None
+    assert calls == [2, 2]
 
 
 def test_prioritized_replay_samples_and_updates_priorities() -> None:
@@ -117,8 +187,9 @@ def test_train_dqn_smoke_writes_metrics(tmp_path: Path) -> None:
     )
 
     summary = train_dqn(config)
+    output_dir = Path(summary["output_dir"])
 
-    assert (tmp_path / "metrics.csv").exists()
-    assert (tmp_path / "result_summary.json").exists()
-    assert (tmp_path / "training_curve.csv").exists()
+    assert (output_dir / "metrics.csv").exists()
+    assert (output_dir / "result_summary.json").exists()
+    assert (output_dir / "training_curve.csv").exists()
     assert summary["experiment_name"] == "smoke_dqn"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 import torch
 
@@ -29,11 +30,7 @@ class FeatureEncoder:
             dtype=torch.float32,
             device=self.device,
         )
-        candidate_tensor = torch.tensor(
-            [self._candidate_features(row) for _, row in candidates.iterrows()],
-            dtype=torch.float32,
-            device=self.device,
-        )
+        candidate_tensor = self._encode_candidates_batch(candidates)
         return EncodedObservation(
             state=state_tensor,
             candidates=candidate_tensor,
@@ -59,21 +56,32 @@ class FeatureEncoder:
             1.0 if state.get("split") == "train" else 0.0,
         ]
 
-    def _candidate_features(self, row: pd.Series) -> list[float]:
-        return [
-            self._log_norm(row.get("project_id", 0.0)),
-            self._log_norm(row.get("category", 0.0)),
-            self._log_norm(row.get("sub_category", 0.0)),
-            self._log_norm(row.get("industry", 0.0)),
-            self._money_norm(row.get("total_awards", 0.0)),
-            self._score_norm(row.get("average_score", 0.0)),
-            self._log_norm(row.get("creative_count", 0.0)),
-            self._log_norm(row.get("entry_count", row.get("competition", 0.0))),
-            self._float(row.get("category_match", 0.0)),
-            self._hours_norm(row.get("remaining_hours", 0.0)),
-            self._log_norm(row.get("competition", 0.0)),
-            self._float(row.get("heuristic_score", 0.0)),
-        ]
+    def _encode_candidates_batch(self, candidates: pd.DataFrame) -> torch.Tensor:
+        """Encode all candidates at once — avoids per-row iterrows()."""
+        if candidates.empty:
+            return torch.empty((0, self.candidate_dim), dtype=torch.float32, device=self.device)
+
+        def _num(col: str) -> np.ndarray:
+            if col not in candidates.columns:
+                return np.zeros(len(candidates), dtype=np.float64)
+            series = pd.to_numeric(candidates[col], errors="coerce").fillna(0.0)
+            return series.to_numpy(dtype=np.float64)
+
+        rows = np.column_stack([
+            np.log1p(np.maximum(_num("project_id"), 0.0)) / 12.0,
+            np.log1p(np.maximum(_num("category"), 0.0)) / 12.0,
+            np.log1p(np.maximum(_num("sub_category"), 0.0)) / 12.0,
+            np.log1p(np.maximum(_num("industry"), 0.0)) / 12.0,
+            np.log1p(np.maximum(_num("total_awards"), 0.0)) / 10.0,
+            np.clip(_num("average_score"), 0.0, None) / 5.0,
+            np.log1p(np.maximum(_num("creative_count"), 0.0)) / 12.0,
+            np.log1p(np.maximum(_num("entry_count") if "entry_count" in candidates.columns else _num("competition"), 0.0)) / 12.0,
+            np.nan_to_num(_num("category_match"), nan=0.0),
+            np.clip(_num("remaining_hours"), 0.0, None) / (24.0 * 30.0),
+            np.log1p(np.maximum(_num("competition"), 0.0)) / 12.0,
+            np.nan_to_num(_num("heuristic_score"), nan=0.0),
+        ])
+        return torch.tensor(rows, dtype=torch.float32, device=self.device)
 
     @staticmethod
     def _float(value: object) -> float:
