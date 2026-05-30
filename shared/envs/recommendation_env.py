@@ -47,6 +47,9 @@ class CrowdsourcingRecEnv:
         self.recommended_counts: dict[int, int] = {}
         self.total_recommendations = 0
         self.worker_quality = self.workers.set_index("worker_id")["worker_quality"].to_dict()
+        self.projects_by_id = self.projects.set_index("project_id", drop=False)
+        self._candidate_cache_index: int | None = None
+        self._candidate_cache: pd.DataFrame | None = None
 
     @classmethod
     def from_artifacts(
@@ -76,6 +79,8 @@ class CrowdsourcingRecEnv:
         self.worker_history = {}
         self.recommended_counts = {}
         self.total_recommendations = 0
+        self._candidate_cache_index = None
+        self._candidate_cache = None
         return self._state()
 
     def _current_event(self) -> pd.Series:
@@ -96,6 +101,8 @@ class CrowdsourcingRecEnv:
         }
 
     def get_candidates(self) -> pd.DataFrame:
+        if self._candidate_cache_index == self.index and self._candidate_cache is not None:
+            return self._candidate_cache.copy()
         event = self._current_event()
         worker_id = int(event["worker_id"])
         candidates = active_candidates(
@@ -106,7 +113,11 @@ class CrowdsourcingRecEnv:
         )
         true_project_id = int(event["project_id"])
         if true_project_id not in set(candidates.get("project_id", pd.Series(dtype=int)).astype(int)):
-            true_project = self.projects[self.projects["project_id"] == true_project_id].copy()
+            true_project = (
+                self.projects_by_id.loc[[true_project_id]].copy()
+                if true_project_id in self.projects_by_id.index
+                else pd.DataFrame()
+            )
             if not true_project.empty:
                 current_time = pd.to_datetime(event["entry_created_at"], utc=True)
                 true_project["category_match"] = 0.0
@@ -126,7 +137,10 @@ class CrowdsourcingRecEnv:
                     ],
                     ignore_index=True,
                 )
-        return candidates.head(self.candidate_k).reset_index(drop=True)
+        result = candidates.head(self.candidate_k).reset_index(drop=True)
+        self._candidate_cache_index = self.index
+        self._candidate_cache = result
+        return result.copy()
 
     def step(self, action_index: int) -> tuple[dict, float, bool, dict]:
         candidates = self.get_candidates()
@@ -142,8 +156,11 @@ class CrowdsourcingRecEnv:
         hit = recommended_project_id == true_project_id
         worker_id = int(event["worker_id"])
         worker_quality = float(self.worker_quality.get(worker_id, 0.0))
-        true_project = self.projects[self.projects["project_id"] == true_project_id]
-        true_project_row = true_project.iloc[0] if not true_project.empty else None
+        true_project_row = (
+            self.projects_by_id.loc[true_project_id]
+            if true_project_id in self.projects_by_id.index
+            else None
+        )
         same_category = _same_value(recommended, true_project_row, "category")
         same_sub_category = _same_value(recommended, true_project_row, "sub_category")
         same_industry = _same_value(recommended, true_project_row, "industry")
@@ -189,6 +206,8 @@ class CrowdsourcingRecEnv:
         self.total_recommendations += 1
         self._update_history(worker_id, event)
         self.index += 1
+        self._candidate_cache_index = None
+        self._candidate_cache = None
         done = self.index >= len(self.events)
         reward = float(rewards[f"{self.reward_type}_reward"])
         return self._state(), reward, done, info
@@ -200,9 +219,10 @@ class CrowdsourcingRecEnv:
 
     def _update_history(self, worker_id: int, event: pd.Series) -> None:
         history = self.worker_history.setdefault(worker_id, {"categories": []})
-        project = self.projects[self.projects["project_id"] == int(event["project_id"])]
-        if not project.empty:
-            history["categories"].append(int(project.iloc[0]["category"]))
+        project_id = int(event["project_id"])
+        if project_id in self.projects_by_id.index:
+            project = self.projects_by_id.loc[project_id]
+            history["categories"].append(int(project["category"]))
             history["top_category"] = max(
                 set(history["categories"]),
                 key=history["categories"].count,

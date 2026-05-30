@@ -65,12 +65,12 @@ class DQNAgent:
         encoded_next = self.encoder.encode(next_state, next_candidates)
         self.replay.push(
             Transition(
-                state=encoded.state.detach(),
-                candidates=encoded.candidates.detach(),
+                state=encoded.state.detach().cpu(),
+                candidates=encoded.candidates.detach().cpu(),
                 action=action,
                 reward=reward,
-                next_state=encoded_next.state.detach(),
-                next_candidates=encoded_next.candidates.detach(),
+                next_state=encoded_next.state.detach().cpu(),
+                next_candidates=encoded_next.candidates.detach().cpu(),
                 done=done,
             )
         )
@@ -81,8 +81,8 @@ class DQNAgent:
         batch = self.replay.sample(self.config.batch_size, beta=self.config.beta_at(step))
 
         batch_Q, _action_offsets = self.policy_net.forward_batch(
-            [t.state for t in batch.transitions],
-            [t.candidates for t in batch.transitions],
+            [t.state.to(self.device) for t in batch.transitions],
+            [t.candidates.to(self.device) for t in batch.transitions],
         )
 
         # Index into the concatenated Q-values at each action location
@@ -94,13 +94,13 @@ class DQNAgent:
 
         with torch.no_grad():
             next_batch_Q, _next_offsets = self.target_net.forward_batch(
-                [t.next_state for t in batch.transitions],
-                [t.next_candidates for t in batch.transitions],
+                [t.next_state.to(self.device) for t in batch.transitions],
+                [t.next_candidates.to(self.device) for t in batch.transitions],
             )
             if self.config.double_dqn:
                 next_online_batch_Q, _next_online_offsets = self.policy_net.forward_batch(
-                    [t.next_state for t in batch.transitions],
-                    [t.next_candidates for t in batch.transitions],
+                    [t.next_state.to(self.device) for t in batch.transitions],
+                    [t.next_candidates.to(self.device) for t in batch.transitions],
                 )
             next_values = []
             for i, t in enumerate(batch.transitions):
@@ -146,5 +146,13 @@ class DQNAgent:
 
     def _select_device(self, device: str) -> torch.device:
         if device == "auto":
-            return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            if torch.cuda.is_available():
+                return torch.device("cuda")
+            if (
+                hasattr(torch.backends, "mps")
+                and torch.backends.mps.is_built()
+                and torch.backends.mps.is_available()
+            ):
+                return torch.device("mps")
+            return torch.device("cpu")
         return torch.device(device)

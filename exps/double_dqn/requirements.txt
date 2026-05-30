@@ -1,0 +1,6 @@
+-r ../../requirements.txt
+numpy>=1.26
+matplotlib>=3.8
+pyyaml>=6.0
+torch>=2.2
+tqdm>=4.66

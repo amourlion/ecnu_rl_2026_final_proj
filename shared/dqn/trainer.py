@@ -13,6 +13,14 @@ from shared.envs import CrowdsourcingRecEnv
 from shared.metrics import evaluate_agent
 
 
+def _progress(iterable, **kwargs):
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        return iterable
+    return tqdm(iterable, **kwargs)
+
+
 def _resolve_output_dir(base: Path) -> Path:
     """Return base/v1, base/v2, ... choosing the next unused version."""
     version = 1
@@ -39,7 +47,16 @@ def train_dqn(config: DQNConfig) -> dict:
     curve_rows = []
 
     t_train_start = time.perf_counter()
-    for step in range(config.train_steps):
+    progress = _progress(
+        range(config.train_steps),
+        desc=config.experiment_name,
+        unit="step",
+        dynamic_ncols=True,
+        mininterval=10.0,
+        maxinterval=30.0,
+        miniters=1_000,
+    )
+    for step in progress:
         if done:
             state = train_env.reset()
             done = bool(state.get("done", False))
@@ -73,6 +90,13 @@ def train_dqn(config: DQNConfig) -> dict:
                 "hit": bool(info["hit"]),
             }
         )
+        if hasattr(progress, "set_postfix") and step % 1_000 == 0:
+            progress.set_postfix(
+                reward=f"{float(reward):.3f}",
+                loss="none" if loss is None else f"{loss:.4f}",
+                epsilon=f"{float(epsilon):.3f}",
+                hit=int(bool(info["hit"])),
+            )
         state = next_state
 
     t_train_end = time.perf_counter()

@@ -143,6 +143,18 @@ def test_double_dqn_uses_one_batched_online_next_forward(monkeypatch) -> None:
     assert calls == [2, 2]
 
 
+def test_auto_device_prefers_mps_when_cuda_is_unavailable(monkeypatch) -> None:
+    from shared.dqn import DQNAgent, DQNConfig
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.backends.mps, "is_built", lambda: True)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
+
+    agent = DQNAgent.__new__(DQNAgent)
+
+    assert agent._select_device("auto").type == "mps"
+
+
 def test_prioritized_replay_samples_and_updates_priorities() -> None:
     from shared.dqn import PrioritizedReplayBuffer, Transition
 
